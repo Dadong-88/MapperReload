@@ -9,13 +9,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
-import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -26,19 +25,17 @@ import java.util.concurrent.TimeUnit;
  * @Date：2024/5/6 22:37
  * @Desc:
  */
-@Component
+
+
 public class WatcherWork {
     @Value("${mapper.reload.enable:true}")
     private Boolean enable;
-
-
-
     private static final Logger logger = LoggerFactory.getLogger(WatcherWork.class);
     @javax.annotation.Resource
     private SqlSessionFactory sqlSessionFactory;
     private List<File> mapperLocations = new ArrayList<>();
 
-    @Value("${mybatis.mapperLocations: classpath*:mapper/**/*Mapper.xml}")
+    @Value("${mybatis.mapperLocations:classpath:/mapper/**}")
     private String packageSearchPath;
     private final HashMap<String, Long> fileMapping = new HashMap<>();
 
@@ -67,9 +64,9 @@ public class WatcherWork {
                 for (File file : mapperLocations) {
                     try {
                         XMLMapperBuilder xmlMapperBuilder = new XMLMapperBuilder(
-                                new FileInputStream(file), configuration, file.getAbsolutePath(), configuration.getSqlFragments());
+                                Files.newInputStream(file.toPath()), configuration, file.getAbsolutePath(), configuration.getSqlFragments());
                         xmlMapperBuilder.parse();
-                        logger.debug("Mapper file [{}] cache load successful", file.getName());
+                        logger.info("Mapper file [{}] cache load successful", file.getName());
                     } catch (IOException e) {
 
                     }
