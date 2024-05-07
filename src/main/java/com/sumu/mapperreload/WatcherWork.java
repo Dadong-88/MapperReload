@@ -16,10 +16,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -31,48 +28,42 @@ import java.util.concurrent.TimeUnit;
  */
 @Component
 public class WatcherWork {
-    @Value("${mapper.reload.enable}")
+    @Value("${mapper.reload.enable:true}")
     private Boolean enable;
+
+
+
+    private static final Logger logger = LoggerFactory.getLogger(WatcherWork.class);
+    @javax.annotation.Resource
+    private SqlSessionFactory sqlSessionFactory;
+    private List<File> mapperLocations = new ArrayList<>();
+
+    @Value("${mybatis.mapperLocations: classpath*:mapper/**/*Mapper.xml}")
+    private String packageSearchPath;
+    private final HashMap<String, Long> fileMapping = new HashMap<>();
 
 
     @PostConstruct
     public void initWatcher(){
         if (enable){
             System.out.println("mapper reload watcher init success");
+            startThreadListener();
         }
-    }
-
-    private static final Logger logger = LoggerFactory.getLogger(WatcherWork.class);
-    private SqlSessionFactory sqlSessionFactory;
-    private List<File> mapperLocations;
-    private String packageSearchPath = "classpath:mapper/**/*.xml";
-    private final HashMap<String, Long> fileMapping = new HashMap<>();
-
-    public WatcherWork(SqlSessionFactory sqlSessionFactory, String packageSearchPath) {
-        this.sqlSessionFactory = sqlSessionFactory;
-        if (packageSearchPath != null && !packageSearchPath.isEmpty()) {
-            this.packageSearchPath = packageSearchPath;
-        }
-        startThreadListener();
     }
 
     private void startThreadListener() {
         ScheduledExecutorService service = Executors.newScheduledThreadPool(1);
         // 每5秒执行一次
-        service.scheduleAtFixedRate(this::readMapperXml, 0, 5, TimeUnit.SECONDS);
+        service.scheduleAtFixedRate(this::readMapperXml, 5, 5, TimeUnit.SECONDS);
     }
 
     public void readMapperXml() {
         try {
             Configuration configuration = sqlSessionFactory.getConfiguration();
-            // Step 1: 扫描文件
-            scanMapperXml();
 
-            // Step 2: 判断是否有文件发生了变化
+            scanMapperXml();
             if (isChanged()) {
-                // Step 2.1: 清理
                 removeConfig(configuration);
-                // Step 2.2: 重新加载
                 for (File file : mapperLocations) {
                     try {
                         XMLMapperBuilder xmlMapperBuilder = new XMLMapperBuilder(
@@ -80,7 +71,7 @@ public class WatcherWork {
                         xmlMapperBuilder.parse();
                         logger.debug("Mapper file [{}] cache load successful", file.getName());
                     } catch (IOException e) {
-                        logger.error("Mapper file [{}] does not exist or content format is incorrect", file.getName());
+
                     }
                 }
             }
@@ -91,8 +82,12 @@ public class WatcherWork {
 
     private void scanMapperXml() throws IOException {
         Resource[] resources = new PathMatchingResourcePatternResolver().getResources(packageSearchPath);
+        mapperLocations.clear();
+
         for (Resource resource : resources) {
-            mapperLocations.add(resource.getFile());
+            String absolutePath1 = resource.getFile().getAbsolutePath();
+            String path2 = absolutePath1.replace("target\\classes", "src\\main\\resources");
+            mapperLocations.add(new File(path2));
         }
     }
 
