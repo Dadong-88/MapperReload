@@ -1,16 +1,28 @@
 package com.sumu.mapperreload;
 
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.Resource;
+
+import org.apache.ibatis.builder.xml.XMLMapperBuilder;
+import org.apache.ibatis.session.Configuration;
+import org.apache.ibatis.session.SqlSessionFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Component;
 
-import java.nio.file.Path;
-import java.nio.file.StandardWatchEventKinds;
-import java.nio.file.WatchEvent;
-import java.nio.file.WatchKey;
+import javax.annotation.PostConstruct;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @Auth：瑾木
@@ -22,47 +34,103 @@ public class WatcherWork {
     @Value("${mapper.reload.enable}")
     private Boolean enable;
 
-    @Resource
-    private MapperReloadWatcher mapperWatcher;
 
     @PostConstruct
     public void initWatcher(){
         if (enable){
-            mapperWatcher.registerWatcher();
             System.out.println("mapper reload watcher init success");
-            registerTask();
         }
     }
 
+    private static final Logger logger = LoggerFactory.getLogger(WatcherWork.class);
+    private SqlSessionFactory sqlSessionFactory;
+    private List<File> mapperLocations;
+    private String packageSearchPath = "classpath:mapper/**/*.xml";
+    private final HashMap<String, Long> fileMapping = new HashMap<>();
 
-    private String[] registerTask() {
-        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
+    public WatcherWork(SqlSessionFactory sqlSessionFactory, String packageSearchPath) {
+        this.sqlSessionFactory = sqlSessionFactory;
+        if (packageSearchPath != null && !packageSearchPath.isEmpty()) {
+            this.packageSearchPath = packageSearchPath;
+        }
+        startThreadListener();
+    }
 
-        executor.execute(()->{
-            while (true){
-                System.out.println("TaskService is running...");
-                try {
-                    WatchKey take = MapperReloadWatcher.watchService.take();
-                    List<WatchEvent<?>> watchEvents = take.pollEvents();
-                    for (WatchEvent<?> watchEvent : watchEvents) {
-                        WatchEvent.Kind<?> kind = watchEvent.kind();
-                        if (kind==StandardWatchEventKinds.OVERFLOW){
-                            continue;
-                        }
-                        Path changedFile = (Path) watchEvent.context();
-                        if (changedFile.toString().endsWith(".xml")) {
-                            System.out.println("Event kind: " + kind + ", File: " + changedFile);
-                        }
+    private void startThreadListener() {
+        ScheduledExecutorService service = Executors.newScheduledThreadPool(1);
+        // 每5秒执行一次
+        service.scheduleAtFixedRate(this::readMapperXml, 0, 5, TimeUnit.SECONDS);
+    }
+
+    public void readMapperXml() {
+        try {
+            Configuration configuration = sqlSessionFactory.getConfiguration();
+            // Step 1: 扫描文件
+            scanMapperXml();
+
+            // Step 2: 判断是否有文件发生了变化
+            if (isChanged()) {
+                // Step 2.1: 清理
+                removeConfig(configuration);
+                // Step 2.2: 重新加载
+                for (File file : mapperLocations) {
+                    try {
+                        XMLMapperBuilder xmlMapperBuilder = new XMLMapperBuilder(
+                                new FileInputStream(file), configuration, file.getAbsolutePath(), configuration.getSqlFragments());
+                        xmlMapperBuilder.parse();
+                        logger.debug("Mapper file [{}] cache load successful", file.getName());
+                    } catch (IOException e) {
+                        logger.error("Mapper file [{}] does not exist or content format is incorrect", file.getName());
                     }
-                    boolean reset = take.reset();
-                    if (!reset){
-                        break;
-                    }
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
                 }
             }
-        });
+        } catch (Exception e) {
+            logger.error("Failed to refresh MyBatis XML configuration statements", e);
+        }
+    }
+
+    private void scanMapperXml() throws IOException {
+        Resource[] resources = new PathMatchingResourcePatternResolver().getResources(packageSearchPath);
+        for (Resource resource : resources) {
+            mapperLocations.add(resource.getFile());
+        }
+    }
+
+    private void removeConfig(Configuration configuration) throws Exception {
+        Class<?> classConfig = configuration.getClass();
+        clearMap(classConfig, configuration, "mappedStatements");
+        clearMap(classConfig, configuration, "caches");
+        clearMap(classConfig, configuration, "resultMaps");
+        clearMap(classConfig, configuration, "parameterMaps");
+        clearMap(classConfig, configuration, "keyGenerators");
+        clearMap(classConfig, configuration, "sqlFragments");
+        clearSet(classConfig, configuration, "loadedResources");
+    }
+
+    private void clearMap(Class<?> classConfig, Configuration configuration, String fieldName) throws Exception {
+        Field field = classConfig.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        ((Map<?, ?>) field.get(configuration)).clear();
+    }
+
+    private void clearSet(Class<?> classConfig, Configuration configuration, String fieldName) throws Exception {
+        Field field = classConfig.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        ((Set<?>) field.get(configuration)).clear();
+    }
+
+    private boolean isChanged() throws IOException {
+        boolean changed = false;
+        for (File file : mapperLocations) {
+            String resourceName = file.getName();
+            Long lastKnown = fileMapping.get(resourceName);
+            long current = file.length() + file.lastModified();
+            if (lastKnown == null || !lastKnown.equals(current)) {
+                fileMapping.put(resourceName, current);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
 }
